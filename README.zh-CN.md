@@ -1,91 +1,207 @@
-# vite-react-electron
+# 固定资产附件管理系统需求规格说明书（Electron版）
 
-[![awesome-vite](https://awesome.re/mentioned-badge.svg)](https://github.com/vitejs/awesome-vite)
-![GitHub stars](https://img.shields.io/github/stars/caoxiemeihao/vite-react-electron?color=fa6470)
-![GitHub issues](https://img.shields.io/github/issues/caoxiemeihao/vite-react-electron?color=d8b22d)
-![GitHub license](https://img.shields.io/github/license/caoxiemeihao/vite-react-electron)
-[![Required Node.JS >= 14.18.0 || >=16.0.0](https://img.shields.io/static/v1?label=node&message=14.18.0%20||%20%3E=16.0.0&logo=node.js&color=3f893e)](https://nodejs.org/about/releases)
+## 1. 引言
 
-[English](README.md) | 简体中文
+### 1.1 项目背景
 
-## 概述
+- **现状分析**：当前WARP系统资产文档管理存在两大不足：
+  1. 固定资产支持性文档缺失。部分关键性资料仅存于对应固定资产团队人员个人电脑，无共享盘或云端备份，无详细说明，容易丢失，难以对具体情况溯源。
+  2. 机密文档无分级管控，所有附件文档对所有用户开放。
 
-📦 开箱即用  
-🎯 基于官方的 [template-react-ts](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts), 低侵入性  
-🌱 结构清晰，可塑性强  
-💪 支持在渲染进程中使用 Electron、Node.js API  
-🔩 支持 C/C++ 模块  
-🖥 很容易实现多窗口  
+### 1.2 系统定位
 
-## 快速开始
+- **核心价值**：构建文档管理"双防"体系
+  - 防丢失：双重备份机制（本地+云）
+  - 防泄露：军事级加密（AES-256+RSA-2048）
 
-```sh
-# clone the project
-git clone https://github.com/electron-vite/electron-vite-react.git
+## 2. 系统架构
 
-# enter the project directory
-cd electron-vite-react
+### 2.1 技术架构图
 
-# install dependency
-npm install
-
-# develop
-npm run dev
+```mermaid
+graph LR
+  A[Electron客户端] --> B{IPC通信}
+  B --> C[主进程]
+  C --> D[文件加密服务]
+  C --> E[数据库服务]
+  C --> F[同步引擎]
+  D --> G[加密文件存储]
+  E --> H[(SQLite)]
+  F --> I[主数据库]
+  classDef process fill:#e3f2fd,stroke:#2196f3;
+  classDef storage fill:#f0f4c3,stroke:#cddc39;
+  class A,C,D,E,F process
+  class G,H,I storage
 ```
 
-## 调试
+### 2.2 Electron架构设计
 
-![electron-vite-react-debug.gif](/electron-vite-react-debug.gif)
+- **进程模型**：
+  ```ts
+  // 主进程架构示例
+  app.whenReady().then(() => {
+    initializeDBService({
+      encryptionKey: secureStorage.getKey(),
+      autoVacuum: true
+    });
 
-## 目录
+    createMainWindow({
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true
+      }
+    });
+  });
+  ```
 
-*🚨 默认情况下, `electron` 文件夹下的文件将会被构建到 `dist-electron`*
+## 3. 详细功能需求
 
-```tree
-├── electron                                 Electron 源码文件夹
-│   ├── main                                 Main-process 源码
-│   └── preload                              Preload-scripts 源码
-│
-├── release                                  构建后生成程序目录
-│   └── {version}
-│       ├── {os}-{os_arch}                   未打包的程序(绿色运行版)
-│       └── {app_name}_{version}.{ext}       应用安装文件
-│
-├── public                                   同 Vite 模板的 public
-└── src                                      渲染进程源码、React代码
+### 3.1 数据同步服务
+
+#### 3.1.1 增量同步机制
+
+```plantuml
+@startuml
+start
+:初始化连接;
+repeat
+  :获取主库变更日志;
+  :解析变更记录;
+  if (记录类型=新增) then (yes)
+    :插入本地库;
+  elseif (记录类型=更新) then (yes)
+    :版本冲突检查;
+    if (本地版本 < 远程版本) then (yes)
+      :更新本地记录;
+    else (no)
+      :记录冲突日志;
+    endif
+  endif
+repeat while (同步未完成?)
+stop
+@enduml
 ```
 
-<!--
-## 🚨 这需要留神
+#### 3.1.2 性能指标
 
-默认情况下，该模板在渲染进程中集成了 Node.js，如果你不需要它，你只需要删除下面的选项. [因为它会修改 Vite 默认的配置](https://github.com/electron-vite/vite-plugin-electron-renderer#config-presets-opinionated).
+| 指标项       | 目标值          | 测量方法         |
+| ------------ | --------------- | ---------------- |
+| 全量同步时间 | ≤60分钟(5万条) | JMeter压力测试   |
+| 增量同步延迟 | ≤10分钟        | 时间戳差值统计   |
+| 网络中断恢复 | 自动重连(3次)   | 模拟网络抖动测试 |
 
-```diff
-# vite.config.ts
+### 3.2 文件管理模块
 
-export default {
-  plugins: [
-    ...
--   // Use Node.js API in the Renderer-process
--   renderer({
--     nodeIntegration: true,
--   }),
-    ...
-  ],
+#### 3.2.1 文件上传流程
+
+```mermaid
+sequenceDiagram
+  participant U as 用户界面
+  participant R as Renderer进程
+  participant M as Main进程
+  participant S as 存储服务
+  
+  U->>R: 选择文件
+  R->>M: ipcRenderer.invoke('validateFile', fileMeta)
+  M->>S: 检查文件哈希是否已存在
+  alt 文件重复
+    S-->>M: 返回已存在提示
+    M-->>R: 显示警告信息
+  else 新文件
+    U->>R: 输入文件属性
+    R->>M: ipcRenderer.send('startUpload', fileData)
+    M->>S: 分块加密存储(每块4MB)
+    S-->>M: 返回存储路径
+    M->>DB: 记录文件元数据
+    M-->>R: 上传完成通知
+  end
+```
+
+#### 3.2.2 存储路径设计
+
+```bash
+/var/lib/asset-attachments/
+├── public/
+│   └── YYYYMM/
+├── confidential/
+│   └── encrypted/
+└── temp/
+```
+
+### 3.3 安全控制方案
+
+#### 3.3.1 加密方案矩阵
+
+| 安全等级 | 加密算法    | 密钥管理                 |
+| -------- | ----------- | ------------------------ |
+| 公开     | 无          | -                        |
+| 内部     | AES-128-GCM | 系统主密钥加密存储       |
+| 机密     | AES-256-CBC | 用户私钥加密（RSA-2048） |
+
+#### 3.3.2 审计日志规范
+
+```ts
+interface AuditLog {
+  timestamp: string;
+  userId: string;
+  actionType: 'VIEW' | 'DOWNLOAD';
+  targetId: string;
+  sourceIP: string;
 }
 ```
--->
 
-## 🔧 额外的功能
+## 4. 非功能性需求
 
-1. Electron 自动更新 👉 [阅读文档](src/components/update/README.zh-CN.md)
-2. Playwright 测试
+### 4.1 性能指标
 
-## ❔ FAQ
+| 场景               | 并发用户数 | 响应时间要求 |
+| ------------------ | ---------- | ------------ |
+| 文件上传（<100MB） | 10         | ≤30秒       |
+| 复合条件查询       | 100        | ≤2秒        |
+| 批量下载           | 10         | ≤60秒       |
 
-- [C/C++ addons, Node.js modules - Pre-Bundling](https://github.com/electron-vite/vite-plugin-electron-renderer#dependency-pre-bundling)
-- [dependencies vs devDependencies](https://github.com/electron-vite/vite-plugin-electron-renderer#dependencies-vs-devdependencies)
+### 4.2 兼容性要求
 
-## 🍵 🍰 🍣 🍟
+| 平台    | 版本要求       |
+| ------- | -------------- |
+| Windows | 10 21H2及以上  |
+| macOS   | Monterey 12.3+ |
 
-<img width="270" src="https://github.com/caoxiemeihao/blog/blob/main/assets/$qrcode/$.png?raw=true">
+## 5. 部署方案
+
+### 5.1 生产环境配置
+
+```yaml
+# electron-builder配置示例
+appId: com.company.assetattachments
+asar: true
+win:
+  target: ["nsis"]
+mac:
+  target: ["dmg"]
+```
+
+### 5.2 更新策略
+
+1. **增量更新**：使用 `electron-updater`
+2. **安全验证**：SHA-256校验
+3. **回滚机制**：保留最近3个版本
+
+## 6. 验证标准
+
+### 6.1 测试用例矩阵
+
+| 测试类型 | 工具链          |
+| -------- | --------------- |
+| 单元测试 | Jest + Spectron |
+| E2E测试  | Cypress         |
+
+### 6.2 验收标准
+
+1. **功能验收**：
+   - 通过所有测试用例
+   - UAT满意度≥4.5/5
+2. **安全验收**：
+   - 通过渗透测试
+   - 获得ISO 27001认证
