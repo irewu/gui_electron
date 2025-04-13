@@ -20,7 +20,9 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "electron-updater": "^6.3.9"
+    "@heroicons/react": "^2.2.0",
+    "electron-updater": "^6.3.9",
+    "lucide-react": "^0.487.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.2",
